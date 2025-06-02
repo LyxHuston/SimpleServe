@@ -3,8 +3,6 @@ use std::sync::Arc;
 use std::{fs, io};
 use std::path::PathBuf;
 
-use http_body_util::Full;
-use hyper::body::{Bytes, Incoming};
 use hyper::service::service_fn;
 use hyper_util::rt::TokioIo;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
@@ -13,7 +11,12 @@ use tokio::net::TcpListener;
 use tokio_rustls::TlsAcceptor;
 
 use hyper::server::conn::http1;
-use hyper::{Request, Response};
+
+use std::env;
+
+mod serve;
+
+use serve::{serve, EXIT_CODES};
 
 use clap::Parser;
 #[derive(Parser, Debug)]
@@ -28,17 +31,16 @@ struct Args {
 	address: SocketAddr,
 
 	/// Whether or not to use http.  By default uses https.
-	#[arg(short='h', long)]
-	use_http: bool
-}
+	#[arg(short='H', long)]
+	use_http: bool,
 
-async fn serve(req: Request<Incoming>, path: PathBuf)
-			   -> Result<Response<Full<Bytes>>, http::Error> {
-	unimplemented!()
-	// need to:
-	// - make sure requests can't get out of the basedir (making it absolute and no '..' should do)
-	// - find request targets, and handle them based on type
-	//
+	/// Path to the certificate file.
+	#[arg(short, long)]
+	certificate: Option<String>,
+
+	/// Path to the certificate file.
+	#[arg(short, long)]
+	private_key: Option<String>
 }
 
 #[tokio::main]
@@ -57,10 +59,28 @@ async fn main() {
 		return
 	};
 
+	let Ok(basedir) = PathBuf::from(args.basefolder.clone()).canonicalize() else {
+		println!("Could not ascertain a canonical base directory!");
+		return
+	};
+	if !basedir.is_dir() {
+		println!("Base directory is not a directory!");
+		return
+	}
+
+	// note: this operation is unsafe iff there are other threads running.
+	// This is before any other threads start up, so according to docs should
+	// be safe.  See https://doc.rust-lang.org/std/env/fn.set_var.html
+	unsafe {
+		for (i, key) in EXIT_CODES.into_iter().enumerate() {
+			env::set_var(key.to_string(), i.to_string())
+		}
+	}
+	
 	if let Err(e) = if args.use_http {
-		http_server(listener, args.basefolder).await
+		http_server(listener, basedir).await
 	} else {
-		https_server(listener, args.basefolder).await
+		https_server(listener, basedir, args).await
 	} {
 		println!("{}", e);
 	};
@@ -70,7 +90,7 @@ fn error(err: String) -> io::Error {
 	io::Error::new(io::ErrorKind::Other, err)
 }
 
-async fn https_server(listener: TcpListener, path: String) -> Result<
+async fn https_server(listener: TcpListener, basedir: PathBuf, args: Args) -> Result<
 		(),
 		Box<dyn std::error::Error + Send + Sync>
 	> {
@@ -78,9 +98,15 @@ async fn https_server(listener: TcpListener, path: String) -> Result<
 	let _ = rustls::crypto::ring::default_provider().install_default();
 
 	// Load public certificate.
-	let certs = load_certs("examples/sample.pem")?;
+	let certfile = args.certificate.ok_or(error(
+		"HTTPS requires a certificate file to be given!".into()
+	))?;
+	let certs = load_certs(certfile.as_str())?;
 	// Load private key.
-	let key = load_private_key("examples/sample.rsa")?;
+	let keyfile = args.private_key.ok_or(error(
+		"HTTPS requires a certificate file to be given!".into()
+	))?;
+	let key = load_private_key(keyfile.as_str())?;
 
 	// Build TLS configuration.
 	let mut server_config = ServerConfig::builder()
@@ -89,12 +115,6 @@ async fn https_server(listener: TcpListener, path: String) -> Result<
 		.map_err(|e| error(e.to_string()))?;
 	server_config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec(), b"http/1.0".to_vec()];
 	let tls_acceptor = TlsAcceptor::from(Arc::new(server_config));
-
-	let basedir = PathBuf::from(path);
-	if !basedir.is_dir() {
-		return Err("Base directory is not a directory!".into())
-	}
-
 
 	loop {
 		let basedir = basedir.clone();
@@ -144,14 +164,10 @@ fn load_private_key(filename: &str) -> io::Result<PrivateKeyDer<'static>> {
 	rustls_pemfile::private_key(&mut reader).map(|key| key.unwrap())
 }
 
-async fn http_server(listener: TcpListener, path: String) -> Result<
+async fn http_server(listener: TcpListener, basedir: PathBuf) -> Result<
 		(),
 		Box<dyn std::error::Error + Send + Sync>
 		> {
-	let basedir = PathBuf::from(path);
-	if !basedir.is_dir() {
-		return Err("Base directory is not a directory!".into())
-	}
 	loop {
 		let (tcp_stream, _) = listener.accept().await?;
 		let basedir = basedir.clone();
