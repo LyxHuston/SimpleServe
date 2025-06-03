@@ -1,4 +1,4 @@
-use std::{fs::File, io::{Read, Write, Seek}, path::{PathBuf, Path}, process::{Child, Command, Stdio}};
+use std::{fs::File, io::{Read, Seek, Write}, path::{Path, PathBuf}, process::{Child, Command, Stdio}};
 use hyper::{
 	Request, Response,
 	body::{Bytes, Incoming}
@@ -12,16 +12,16 @@ use cmd_lib::run_fun;
 
 use tempfile::tempfile;
 
-struct FileWrap {
-	file: File,
-	path: String
+struct OriginWrap<T> {
+	data: T,
+	origin: PathBuf
 }
 
 enum ProcessingState {
 	ErrorCode(u16),
 	InternalError(u16, String),
-	Static(FileWrap),
-	Chain(Vec<Child>),
+	Static(OriginWrap<File>),
+	Chain(Vec<OriginWrap<Child>>),
 	HttpError(Error)
 }
 
@@ -31,8 +31,8 @@ use ProcessingState::*;
 fn halt_processing(proc: &mut ProcessingState) {
 	let Chain(proc) = proc else {return};
 	for child in proc {
-		let _ = child.kill();
-		let _ =child.wait();
+		let _ = child.data.kill();
+		let _ = child.data.wait();
 	}
 }
 
@@ -111,15 +111,15 @@ fn handle_file(
 		let (input_opt, mut prev_chain) = match prev_state {
 			Chain(mut v) => (v
 				.last_mut()
-				.map(|c| c.stdout.take())
+				.map(|c| c.data.stdout.take())
 				.unwrap_or(None)
 				.map(Stdio::from), v),
-			Static(b) => (Some(Stdio::from(b.file)), Vec::new()),
+			Static(b) => (Some(Stdio::from(b.data)), Vec::new()),
 			_ => (tempfile().ok().map(Stdio::from), Vec::new())
 		};
 		let Some(input) = input_opt else {
 			for mut c in prev_chain {
-				let _ = c.kill();
+				let _ = c.data.kill();
 			}
 			return InternalError(
 				500, "Could not ascertain input from previous processing state".to_string())
@@ -132,12 +132,15 @@ fn handle_file(
 			.stdout(Stdio::piped())
 			.spawn() else {
 				for mut c in prev_chain {
-					let _ = c.kill();
+					let _ = c.data.kill();
 				}
 				return InternalError(
 					500, format!("Error running command {}", file.to_string_lossy()))
 			};
-		prev_chain.push(child);
+		prev_chain.push(OriginWrap{
+			data:child,
+			origin:file
+		});
 		Chain(prev_chain)
 	} else {
 		// if exists, not executable, not a folder, return 200, Content-type mime-type, and the file 
@@ -149,9 +152,9 @@ fn handle_file(
 				format!("Couldn't open file {}", file.to_string_lossy())
 			);
 		};
-		Static(FileWrap{
-			file:open_file,
-			path:file.to_string_lossy().to_string()
+		Static(OriginWrap{
+			data:open_file,
+			origin:file
 		})
 	}
 }
@@ -189,9 +192,9 @@ fn resolve_to_response_inner(status: ProcessingState)
 		}
 		Static(b) => {
 			let mut data = Vec::new();
-			let FileWrap{
-				file:mut f,
-				path:p
+			let OriginWrap{
+				data:mut f,
+				origin:p
 			} = b;
 			f.rewind().map_err(|_| InternalError(
 				500,
@@ -199,11 +202,11 @@ fn resolve_to_response_inner(status: ProcessingState)
 			))?;
 			f.read_to_end(&mut data).map_err(|_| InternalError(
 				500,
-				format!("Couldn't read file {}", p)
+				format!("Couldn't read file {}", p.display())
 			))?;
 			let mimetype = run_fun!(file -ib $p).map_err(|_| InternalError(
 				500,
-				format!("Error getting mimetype of {}", p)
+				format!("Error getting mimetype of {}", p.display())
 			))?;
 			Ok(Builder::new()
 				.status(200)
@@ -257,9 +260,9 @@ async fn serve_help(req: Request<Incoming>, path: PathBuf)
 		return InternalError(500, "Unable to flush temp file.".to_string())
 	};
 	// handle it, then go over the output
-	handle_layer(&mut path, &layers[..], &mut params, Static(FileWrap{
-		file:inp,
-		path:String::from("incoming")
+	handle_layer(&mut path, &layers[..], &mut params, Static(OriginWrap{
+		data:inp,
+		origin:"incoming".into()
 	}))
 }
 
