@@ -73,8 +73,13 @@ fn handle_file(file: &PathBuf, mut prev_state: ProcessingState, params: &Vec<Str
 	// this is fine, because it's not expecting to be serving from
 	// directories that are changing frequently
 	if let HttpError(e) = prev_state {
-		HttpError(e) // just forward it.  Don't know and isn't my responsibility to handle these
-	} else if !file.exists() {
+		return HttpError(e); // just forward it.  Don't know and isn't my responsibility to handle these
+	}
+	let mut file = file.clone();
+	if file.is_dir() {
+		file.push(".index")
+	}
+	if !file.exists() {
 		halt_processing(&mut prev_state);
 		ErrorCode(404)
 	} else if file.is_dir() {
@@ -115,7 +120,7 @@ fn handle_file(file: &PathBuf, mut prev_state: ProcessingState, params: &Vec<Str
 			return InternalError(
 				500, format!("Could not ascertain input from previous processing state"))
 		};
-		let Ok(child) = Command::new(file)
+		let Ok(child) = Command::new(&file)
 			.current_dir(work_dir)
 			.args(params)
 			.stdin(input)
@@ -134,7 +139,7 @@ fn handle_file(file: &PathBuf, mut prev_state: ProcessingState, params: &Vec<Str
 		// if exists, not executable, not a folder, return 200, Content-type mime-type, and the file 
 		halt_processing(&mut prev_state); // should user be *allowed* to funnel a chain process
 										// into a static file?
-		let Ok(mut open_file) = File::open(file) else {
+		let Ok(mut open_file) = File::open(&file) else {
 			return InternalError(
 				500,
 				format!("Couldn't open file {}", file.to_string_lossy())
