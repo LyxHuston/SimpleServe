@@ -22,6 +22,23 @@ struct HasStatus<T> {
 	status: u16
 }
 
+type BackTrackState = Result<ProcessingState, ProcessingState>;
+#[inline(always)]
+#[allow(non_snake_case)]
+fn Done(p: ProcessingState) -> BackTrackState {Err(p)}
+#[inline(always)]
+#[allow(non_snake_case)]
+fn BackTrack(p: ProcessingState) -> BackTrackState {Ok(p)}
+
+#[inline(always)]
+fn inner(s: BackTrackState) -> ProcessingState {
+	match s {
+		Ok(p) => p,
+		Err(p) => p
+	}
+}
+
+
 enum ProcessingState {
 	ErrorCode(u16),
 	InternalError(u16, String),
@@ -186,17 +203,23 @@ fn handle_file(
 fn handle_layer(
 	curr_layer: &mut PathBuf, remaining_layers: &[String],
 	params: &mut Vec<String>, incoming_body: ProcessingState
-) -> ProcessingState {
+) -> BackTrackState {
 	if remaining_layers.is_empty() {
-		handle_file(curr_layer, incoming_body, params, false)
+		BackTrack(handle_file(curr_layer, incoming_body, params, false))
 	} else if remaining_layers[0].starts_with(".") {
 		// hide hidden files/directories and prevent escape through '..'
-		ErrorCode(403)
+		BackTrack(ErrorCode(403))
 	} else {
 		curr_layer.push(remaining_layers[0].clone());
-		let res = handle_layer(curr_layer, &remaining_layers[1..], params, incoming_body);
+		let res = handle_layer(curr_layer, &remaining_layers[1..], params, incoming_body)?;
 		curr_layer.pop();
-		res
+		// if there is a base file, stop the backtracking and post-processing
+		curr_layer.push(".base");
+		if curr_layer.exists() {
+			return Done(res)
+		}
+		curr_layer.pop();
+		BackTrack(res)
 	}
 }
 
@@ -220,7 +243,7 @@ fn resolve_to_response_inner(status: ProcessingState)
 					data:mut f,
 					origin:p
 				},
-				status:status
+				status
 			} = b;
 			f.rewind().map_err(|_| InternalError(
 				500,
@@ -286,13 +309,13 @@ async fn serve_help(req: Request<Incoming>, path: PathBuf)
 		return InternalError(500, "Unable to flush temp file.".to_string())
 	};
 	// handle it, then go over the output
-	handle_layer(&mut path, &layers[..], &mut params, Static(HasStatus{
+	inner(handle_layer(&mut path, &layers[..], &mut params, Static(HasStatus{
 		data:OriginWrap{
 			data:inp,
 			origin:"incoming".into()
 		},
 		status:200
-	}))
+	})))
 }
 
 pub async fn serve(req: Request<Incoming>, path: PathBuf)
