@@ -1,4 +1,4 @@
-use std::{fs::File, io::{Read, Write}, path::PathBuf, process::{Child, Command, Stdio}};
+use std::{fs::File, io::{Read, Write, Seek}, path::{PathBuf, Path}, process::{Child, Command, Stdio}};
 use hyper::{
 	Request, Response,
 	body::{Bytes, Incoming}
@@ -12,10 +12,15 @@ use cmd_lib::run_fun;
 
 use tempfile::tempfile;
 
+struct FileWrap {
+	file: File,
+	path: String
+}
+
 enum ProcessingState {
 	ErrorCode(u16),
 	InternalError(u16, String),
-	Static(Response<Vec<u8>>),
+	Static(FileWrap),
 	Chain(Vec<Child>),
 	HttpError(Error)
 }
@@ -60,28 +65,27 @@ fn to_exit_code(res: Option<i32>) -> u16 {
 	res.map(|r| *(EXIT_CODES.get(r as usize).unwrap_or(&500u16))).unwrap_or(500u16)
 }
 
-
-fn file_with(data: &[u8]) -> Option<File> {
-	let mut tmp = tempfile().ok()?;
-	tmp.write_all(data).ok()?;
-	Some(tmp)
-}
-
 // args passed to commands are uri_path, METHOD and then mappings (server does not get fragment)
-fn handle_file(file: &PathBuf, mut prev_state: ProcessingState, params: &Vec<String>) -> ProcessingState {
+fn handle_file(
+	file: &Path, mut prev_state: ProcessingState, params: &Vec<String>, pass_if_missing: bool
+) -> ProcessingState {
 	// there are many time-of-check time-of-use race conditions here.
 	// this is fine, because it's not expecting to be serving from
 	// directories that are changing frequently
 	if let HttpError(e) = prev_state {
 		return HttpError(e); // just forward it.  Don't know and isn't my responsibility to handle these
 	}
-	let mut file = file.clone();
+	let mut file = file.to_path_buf();
 	if file.is_dir() {
 		file.push(".index")
 	}
 	if !file.exists() {
-		halt_processing(&mut prev_state);
-		ErrorCode(404)
+		if pass_if_missing {
+			prev_state
+		} else {
+			halt_processing(&mut prev_state);
+			ErrorCode(404)
+		}
 	} else if file.is_dir() {
 		// I am a teapot: I am a dir
 		halt_processing(&mut prev_state);
@@ -109,16 +113,16 @@ fn handle_file(file: &PathBuf, mut prev_state: ProcessingState, params: &Vec<Str
 				.last_mut()
 				.map(|c| c.stdout.take())
 				.unwrap_or(None)
-				.map(|c| Stdio::from(c)), v),
-			Static(b) => (file_with(b.body()).map(Stdio::from), Vec::new()),
+				.map(Stdio::from), v),
+			Static(b) => (Some(Stdio::from(b.file)), Vec::new()),
 			_ => (tempfile().ok().map(Stdio::from), Vec::new())
 		};
 		let Some(input) = input_opt else {
 			for mut c in prev_chain {
-				c.kill();
+				let _ = c.kill();
 			}
 			return InternalError(
-				500, format!("Could not ascertain input from previous processing state"))
+				500, "Could not ascertain input from previous processing state".to_string())
 		};
 		let Ok(child) = Command::new(&file)
 			.current_dir(work_dir)
@@ -128,7 +132,7 @@ fn handle_file(file: &PathBuf, mut prev_state: ProcessingState, params: &Vec<Str
 			.stdout(Stdio::piped())
 			.spawn() else {
 				for mut c in prev_chain {
-					c.kill();
+					let _ = c.kill();
 				}
 				return InternalError(
 					500, format!("Error running command {}", file.to_string_lossy()))
@@ -139,34 +143,16 @@ fn handle_file(file: &PathBuf, mut prev_state: ProcessingState, params: &Vec<Str
 		// if exists, not executable, not a folder, return 200, Content-type mime-type, and the file 
 		halt_processing(&mut prev_state); // should user be *allowed* to funnel a chain process
 										// into a static file?
-		let Ok(mut open_file) = File::open(&file) else {
+		let Ok(open_file) = File::open(&file) else {
 			return InternalError(
 				500,
 				format!("Couldn't open file {}", file.to_string_lossy())
 			);
 		};
-		let mut data = Vec::new();
-		let Ok(_) = open_file.read_to_end(&mut data) else {
-			return InternalError(
-				500,
-				format!("Couldn't read file {}", file.to_string_lossy())
-			);
-		};
-		let Ok(mimetype) = run_fun!(file -ib $file) else {
-			// couldn't get mimetype
-			return InternalError(
-				500,
-				format!("Error getting mimetype of {}", file.to_string_lossy())
-			);
-		};
-		Builder::new()
-			.status(200)
-			.header("Content-Type", mimetype)
-			.body(data)
-			.map_or_else(
-				|err|	HttpError(err),
-				|ok|	Static(ok)
-			)
+		Static(FileWrap{
+			file:open_file,
+			path:file.to_string_lossy().to_string()
+		})
 	}
 }
 
@@ -176,46 +162,70 @@ fn handle_layer(
 	params: &mut Vec<String>, incoming_body: ProcessingState
 ) -> ProcessingState {
 	if remaining_layers.is_empty() {
-		return handle_file(curr_layer, incoming_body, params);
+		handle_file(curr_layer, incoming_body, params, false)
 	} else if remaining_layers[0].starts_with(".") {
 		// hide hidden files/directories and prevent escape through '..'
-		return ErrorCode(403);
+		ErrorCode(403)
 	} else {
 		curr_layer.push(remaining_layers[0].clone());
-		handle_layer(curr_layer, &remaining_layers[1..], params, incoming_body);
+		let res = handle_layer(curr_layer, &remaining_layers[1..], params, incoming_body);
 		curr_layer.pop();
+		res
 	}
-	return ErrorCode(404);
 }
 
-fn resolve_to_response(status: ProcessingState) -> Result<Response<Full<Bytes>>, Error> {
+fn resolve_to_response_inner(status: ProcessingState)
+							 -> Result<Result<Response<Full<Bytes>>, Error>, ProcessingState> {
 	match status {
 		ErrorCode(e) =>
-			Builder::new().status(e).body(
+			Ok(Builder::new().status(e).body(
 				Full::new(Bytes::from(format!("Error {}: That's all we know", e)))
-			),
+			)),
 		InternalError(e, msg) => {
 			println!("{}", msg);
-			Builder::new().status(e).body(
+			Ok(Builder::new().status(e).body(
 				Full::new(Bytes::from(format!("Error {}: That's all we know", e)))
-			)
+			))
 		}
-		Static(b) =>
-			b.headers().iter().fold(
-				Builder::new().status(b.status()),
-				|build, (key, val)| build.header(key, val)
-			)
-			.header("Content-Length", b.body().len())
-			.body(Full::new(Bytes::from(b.body().clone())))
-		,
-		HttpError(e) => Err(e),
+		Static(b) => {
+			let mut data = Vec::new();
+			let FileWrap{
+				file:mut f,
+				path:p
+			} = b;
+			f.rewind().map_err(|_| InternalError(
+				500,
+				"Unable to rewind to start of file while resolving to response".to_string()
+			))?;
+			f.read_to_end(&mut data).map_err(|_| InternalError(
+				500,
+				format!("Couldn't read file {}", p)
+			))?;
+			let mimetype = run_fun!(file -ib $p).map_err(|_| InternalError(
+				500,
+				format!("Error getting mimetype of {}", p)
+			))?;
+			Ok(Builder::new()
+				.status(200)
+				.header("Content-Type", mimetype)
+				.header("Content-Length", data.len())
+				.body(Full::new(Bytes::from(data))))
+		}
+		HttpError(e) => Ok(Err(e)),
 		Chain(c) =>
 			unimplemented!()
 	}
 }
 
-pub async fn serve(req: Request<Incoming>, path: PathBuf)
-			   -> Result<Response<Full<Bytes>>, Error> {
+fn resolve_to_response(status: ProcessingState) -> Result<Response<Full<Bytes>>, Error> {
+	match resolve_to_response_inner(status) {
+		Ok(o) => o,
+		Err(e) => resolve_to_response(e)
+	}
+}
+
+async fn serve_help(req: Request<Incoming>, path: PathBuf)
+					-> ProcessingState {
 	// get the path
 	let mut path = path.clone();
 	// split into parts
@@ -231,17 +241,29 @@ pub async fn serve(req: Request<Incoming>, path: PathBuf)
 	let layers = parts.uri.path().split("/").map(String::from).collect::<Vec<String>>();
 	// open tempfile for input data and put it in
 	let Ok(mut inp) = tempfile() else {
-		println!("Unable to create tempfile for buffer.");
-		return Builder::new().status(500).body(
-			Full::new(Bytes::from(format!("Error 500: That's all we know")))
-		)
+		return InternalError(500, "Unable to create tempfile for buffer.".to_string());
 	};
 	let Ok(body_data) = body.collect().await else {
-		println!("Unable to collect entire incoming body.");
-		return Builder::new().status(500).body(
-			Full::new(Bytes::from(format!("Error 500: That's all we know")))
-		)
+		return InternalError(500, "Unable to collect entire incoming body.".to_string())
+	};
+	let bytes = body_data.to_bytes();
+	let Ok(_) = inp.write_all(&bytes) else {
+		return InternalError(500, "Unable to write incoming body to temp file.".to_string())
+	};
+	let Ok(_) = inp.flush() else {
+		return InternalError(500, "Unable to flush temp file.".to_string())
+	};
+	let Ok(_) = inp.rewind() else {
+		return InternalError(500, "Unable to flush temp file.".to_string())
 	};
 	// handle it, then go over the output
-	resolve_to_response(handle_layer(&mut path, &layers[..], &mut params, Static(body_data.into())))
+	handle_layer(&mut path, &layers[..], &mut params, Static(FileWrap{
+		file:inp,
+		path:String::from("incoming")
+	}))
+}
+
+pub async fn serve(req: Request<Incoming>, path: PathBuf)
+					-> Result<Response<Full<Bytes>>, Error> {
+	resolve_to_response(serve_help(req, path).await)
 }

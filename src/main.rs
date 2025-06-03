@@ -72,7 +72,7 @@ async fn main() {
 	// This is before any other threads start up, so according to docs should
 	// be safe.  See https://doc.rust-lang.org/std/env/fn.set_var.html
 	unsafe {
-		for (i, key) in EXIT_CODES.into_iter().enumerate() {
+		for (i, key) in EXIT_CODES.iter().enumerate() {
 			env::set_var(key.to_string(), i.to_string())
 		}
 	}
@@ -87,7 +87,7 @@ async fn main() {
 }
 
 fn error(err: String) -> io::Error {
-	io::Error::new(io::ErrorKind::Other, err)
+	std::io::Error::other(err)
 }
 
 async fn https_server(listener: TcpListener, basedir: PathBuf, args: Args) -> Result<
