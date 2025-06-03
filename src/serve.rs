@@ -17,22 +17,39 @@ struct OriginWrap<T> {
 	origin: PathBuf
 }
 
+struct HasStatus<T> {
+	data: T,
+	status: u16
+}
+
 enum ProcessingState {
 	ErrorCode(u16),
 	InternalError(u16, String),
-	Static(OriginWrap<File>),
-	Chain(Vec<OriginWrap<Child>>),
+	Static(HasStatus<OriginWrap<File>>),
+	Chain(HasStatus<Vec<OriginWrap<Child>>>),
 	HttpError(Error)
 }
 
 use ProcessingState::*;
 
-//#[inline(always)]
-fn halt_processing(proc: &mut ProcessingState) {
-	let Chain(proc) = proc else {return};
-	for child in proc {
-		let _ = child.data.kill();
-		let _ = child.data.wait();
+impl ProcessingState {
+	//#[inline(always)]
+	fn halt_processing(&mut self) {
+		let Chain(proc) = self else {return};
+		for child in &mut proc.data {
+			let _ = child.data.kill();
+			let _ = child.data.wait();
+		}
+	}
+
+	fn status(&self) -> u16 {
+		match self {
+			ErrorCode(e) => *e,
+			InternalError(e, _) => *e,
+			Static(HasStatus{data:_, status:e}) => *e,
+			Chain(HasStatus{data:_, status:e}) => *e,
+			HttpError(_) => 500
+		}
 	}
 }
 
@@ -83,18 +100,18 @@ fn handle_file(
 		if pass_if_missing {
 			prev_state
 		} else {
-			halt_processing(&mut prev_state);
+			prev_state.halt_processing();
 			ErrorCode(404)
 		}
 	} else if file.is_dir() {
 		// I am a teapot: I am a dir
-		halt_processing(&mut prev_state);
+		prev_state.halt_processing();
 		ErrorCode(418)
 	} else if file.is_executable() {
 		let Some(work_dir) = file.parent() else {
 			// if it cannot determine the parent, that means it's already at root.  Which is bad.
 			// and not just because this shouldn't be running on a dir
-			halt_processing(&mut prev_state);
+			prev_state.halt_processing();
 			return InternalError(
 				500,
 				format!(
@@ -104,18 +121,18 @@ fn handle_file(
 			);
 		};
 		let Ok(headers)	= tempfile() else {
-			halt_processing(&mut prev_state);
+			prev_state.halt_processing();
 			return InternalError(
 				500, String::from("Could not create header tempfile"))
 		};
-		let (input_opt, mut prev_chain) = match prev_state {
-			Chain(mut v) => (v
+		let (input_opt, mut prev_chain, status) = match prev_state {
+			Chain(mut v) => (v.data
 				.last_mut()
 				.map(|c| c.data.stdout.take())
 				.unwrap_or(None)
-				.map(Stdio::from), v),
-			Static(b) => (Some(Stdio::from(b.data)), Vec::new()),
-			_ => (tempfile().ok().map(Stdio::from), Vec::new())
+				.map(Stdio::from), v.data, v.status),
+			Static(b) => (Some(Stdio::from(b.data.data)), Vec::new(), b.status),
+			a => (tempfile().ok().map(Stdio::from), Vec::new(), a.status())
 		};
 		let Some(input) = input_opt else {
 			for mut c in prev_chain {
@@ -141,10 +158,13 @@ fn handle_file(
 			data:child,
 			origin:file
 		});
-		Chain(prev_chain)
+		Chain(HasStatus{
+			data:prev_chain,
+			status
+		})
 	} else {
 		// if exists, not executable, not a folder, return 200, Content-type mime-type, and the file 
-		halt_processing(&mut prev_state); // should user be *allowed* to funnel a chain process
+		prev_state.halt_processing();	// should user be *allowed* to funnel a chain process
 										// into a static file?
 		let Ok(open_file) = File::open(&file) else {
 			return InternalError(
@@ -152,9 +172,12 @@ fn handle_file(
 				format!("Couldn't open file {}", file.to_string_lossy())
 			);
 		};
-		Static(OriginWrap{
-			data:open_file,
-			origin:file
+		Static(HasStatus{
+			data:OriginWrap{
+				data:open_file,
+				origin:file
+			},
+			status:200
 		})
 	}
 }
@@ -192,9 +215,12 @@ fn resolve_to_response_inner(status: ProcessingState)
 		}
 		Static(b) => {
 			let mut data = Vec::new();
-			let OriginWrap{
-				data:mut f,
-				origin:p
+			let HasStatus{
+				data:OriginWrap{
+					data:mut f,
+					origin:p
+				},
+				status:status
 			} = b;
 			f.rewind().map_err(|_| InternalError(
 				500,
@@ -209,7 +235,7 @@ fn resolve_to_response_inner(status: ProcessingState)
 				format!("Error getting mimetype of {}", p.display())
 			))?;
 			Ok(Builder::new()
-				.status(200)
+				.status(status)
 				.header("Content-Type", mimetype)
 				.header("Content-Length", data.len())
 				.body(Full::new(Bytes::from(data))))
@@ -260,9 +286,12 @@ async fn serve_help(req: Request<Incoming>, path: PathBuf)
 		return InternalError(500, "Unable to flush temp file.".to_string())
 	};
 	// handle it, then go over the output
-	handle_layer(&mut path, &layers[..], &mut params, Static(OriginWrap{
-		data:inp,
-		origin:"incoming".into()
+	handle_layer(&mut path, &layers[..], &mut params, Static(HasStatus{
+		data:OriginWrap{
+			data:inp,
+			origin:"incoming".into()
+		},
+		status:200
 	}))
 }
 
