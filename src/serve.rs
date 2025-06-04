@@ -115,7 +115,8 @@ fn to_exit_code(res: Option<i32>) -> u16 {
 		.unwrap_or(500u16)
 }
 
-// args passed to commands are uri_path, METHOD and then mappings (server does not get fragment)
+// args passed to commands are:
+// uri_path, METHOD "" headers "" url parameters "" path parameters (server does not get fragment)
 fn handle_file(
 	file: &Path,
 	mut prev_state: ProcessingState,
@@ -258,7 +259,9 @@ fn handle_layer(
 
 fn resolve_to_response_inner(
 	status: ProcessingState,
-	basepath: PathBuf,
+	basepath: &PathBuf,
+	params: &Vec<String>,
+	layers: &[String]
 ) -> Result<Result<Response<Full<Bytes>>, Error>, ProcessingState> {
 	match status {
 		ErrorCode(e) => Ok(Builder::new().status(e).body(Full::new(Bytes::from(format!(
@@ -331,11 +334,13 @@ fn resolve_to_response_inner(
 					})
 					.map(String::from)
 					.collect::<Vec<String>>();
-				let mut p = Vec::new();
+				let mut p = params.clone();
 				let mut b = basepath.clone();
 				resolve_to_response_inner(
 					inner(handle_layer(&mut b, &comp, &mut p, ErrorCode(code))),
 					basepath,
+					params,
+					layers
 				)
 			} else {
 				let last = c
@@ -370,31 +375,69 @@ fn resolve_to_response_inner(
 
 fn resolve_to_response(
 	status: ProcessingState,
-	base_path: PathBuf,
+	basepath: PathBuf,
+	params: &Vec<String>,
+	layers: &[String]
 ) -> Result<Response<Full<Bytes>>, Error> {
-	match resolve_to_response_inner(status, base_path.clone()) {
+	match resolve_to_response_inner(status, &basepath, params, layers) {
 		Ok(o) => o,
-		Err(e) => resolve_to_response(e, base_path),
+		Err(e) => resolve_to_response(e, basepath, params, layers),
 	}
 }
 
-async fn serve_help(req: Request<Incoming>, path: PathBuf) -> ProcessingState {
+/// uri_path, METHOD "" headers "" url parameters "" path parameters (server does not get fragment)
+fn get_params_and_layers(parts: http::request::Parts) -> (Vec<String>, Vec<String>) {
+	(
+		[
+			String::from(parts.uri.path()),
+			parts.method.to_string(),
+			"".to_string()
+		]
+			.into_iter()
+			.chain(
+				parts
+					.headers
+					.into_iter()
+					.filter_map(
+						|(name_opt, val)|
+						val
+							.to_str()
+							.ok()
+							.map(
+								|val|
+								format!(
+									"{}{}",
+									name_opt
+										.map_or(
+											"".to_string(),
+											|name| format!("{}=", name)
+										),
+									val
+								)
+							)
+					)
+			)
+			.chain(["".to_string()].into_iter())
+			.chain(
+				parts
+					.uri
+					.query()
+					.unwrap_or("")
+					.split("&")
+					.map(String::from)
+			)
+			.chain(["".to_string()].into_iter())
+			.collect::<Vec<String>>(),
+		parts.uri.path().split("/").map(String::from).collect::<Vec<String>>()
+	 )
+}
+
+async fn serve_help(body: Incoming, path: PathBuf, params: &Vec<String>, layers: &[String]) -> ProcessingState {
 	// get the path
 	let mut path = path.clone();
-	// split into parts
-	let (parts, body) = req.into_parts();
-	// process the parameters
-	let mut params = [String::from(parts.uri.path()), parts.method.to_string()]
-		.into_iter()
-		.chain(parts.uri.query().unwrap_or("").split("&").map(String::from))
-		.collect::<Vec<String>>();
-	// split uri path request into layers to be iterated over
-	let layers = parts
-		.uri
-		.path()
-		.split("/")
-		.map(String::from)
-		.collect::<Vec<String>>();
+
+	let mut params = params.clone();
+	
 	// open tempfile for input data and put it in
 	let Ok(mut inp) = tempfile() else {
 		return InternalError(500, "Unable to create tempfile for buffer.".to_string());
@@ -418,7 +461,7 @@ async fn serve_help(req: Request<Incoming>, path: PathBuf) -> ProcessingState {
 	// handle it, then go over the output
 	inner(handle_layer(
 		&mut path,
-		&layers[..],
+		layers,
 		&mut params,
 		Static(HasStatus {
 			data: OriginWrap {
@@ -431,5 +474,7 @@ async fn serve_help(req: Request<Incoming>, path: PathBuf) -> ProcessingState {
 }
 
 pub async fn serve(req: Request<Incoming>, path: PathBuf) -> Result<Response<Full<Bytes>>, Error> {
-	resolve_to_response(serve_help(req, path.clone()).await, path)
+	let (parts, body) = req.into_parts();
+	let (params, layers) = get_params_and_layers(parts);
+	resolve_to_response(serve_help(body, path.clone(), &params, &layers).await, path, &params, &layers)
 }
