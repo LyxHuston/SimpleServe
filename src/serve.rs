@@ -349,7 +349,7 @@ fn resolve_to_response_inner(
 			} else {
 				let last = c
 					.pop()
-					.ok_or_else(|| InternalError(500, "Resolving empty chain".to_string()))?;
+					.ok_or(InternalError(500, "Resolving empty chain".to_string()))?;
 				let output = last
 					.data
 					.wait_with_output()
@@ -421,7 +421,7 @@ fn get_params_and_layers(parts: http::request::Parts) -> (Vec<String>, Vec<Strin
 							)
 					)
 			)
-			.chain(["".to_string()].into_iter())
+			.chain(["".to_string()])
 			.chain(
 				parts
 					.uri
@@ -430,17 +430,17 @@ fn get_params_and_layers(parts: http::request::Parts) -> (Vec<String>, Vec<Strin
 					.split("&")
 					.map(String::from)
 			)
-			.chain(["".to_string()].into_iter())
+			.chain(["".to_string()])
 			.collect::<Vec<String>>(),
-		parts.uri.path().split("/").map(String::from).collect::<Vec<String>>()
+		parts.uri.path().split("/").filter(|p| !p.is_empty()).map(String::from).collect::<Vec<String>>()
 	 )
 }
 
-async fn serve_help(body: Incoming, path: PathBuf, params: &Vec<String>, layers: &[String]) -> ProcessingState {
+async fn serve_help(body: Incoming, path: PathBuf, params: &[String], layers: &[String]) -> ProcessingState {
 	// get the path
 	let mut path = path.clone();
 
-	let mut params = params.clone();
+	let mut params = Vec::from(params);
 	
 	// open tempfile for input data and put it in
 	let Ok(mut inp) = tempfile() else {
