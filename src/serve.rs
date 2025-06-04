@@ -328,19 +328,20 @@ fn resolve_to_response_inner(
 				}
 			}
 			if let Some((origin, code)) = error {
-				let comp = origin
-					.components()
-					.skip(basepath.components().count())
-					.filter_map(|c| match c {
-						std::path::Component::Normal(os_str) => os_str.to_str(),
-						_ => None,
-					})
-					.map(String::from)
-					.collect::<Vec<String>>();
+				let len = origin.components().count()
+					.saturating_sub(basepath.components().count())
+					.saturating_sub(1);
 				let mut p = params.clone();
 				let mut b = basepath.clone();
 				resolve_to_response_inner(
-					inner(handle_layer(&mut b, &comp, &mut p, ErrorCode(code))),
+					inner(handle_layer(
+						&mut b,
+						// only situation min statement should be useful is when something came from an
+						// index or error file. 
+						&layers[..len.clamp(0, layers.len())],
+						&mut p,
+						ErrorCode(code)
+					)),
 					basepath,
 					params,
 					layers
