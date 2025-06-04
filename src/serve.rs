@@ -94,8 +94,16 @@ impl ProcessingState {
 				data:_,
 				status
 			}) => Some(*status),
+			// this method is used to decide what to do with a static file.
+			// need to decide how to handle the chain.  Want to at least
+			// completely resolve it.
+			Chain(_) => todo!(),
 			_ => None
 		}
+	}
+
+	fn is_ok(&self) -> bool {
+		status_is_ok(self.status())
 	}
 }
 
@@ -216,8 +224,10 @@ fn handle_file(
 			status,
 		})
 	} else {
-		// if exists, not executable, not a folder, return 200, Content-type mime-type, and the file
-		// don't let them
+		// if exists, not executable, not a folder, return whatever original status,
+		// Content-type mime-type, and the file
+
+		// process chains currently panic with a todo here.
 		let Some(c) = prev_state.handle_code() else {
 			return InternalError(
 				500,
@@ -325,7 +335,7 @@ fn resolve_to_response_inner(
 						)
 					})?;
 					let code = to_exit_code(status_data.code());
-					if (200..300).contains(&code) {
+					if status_is_ok(code) {
 						continue;
 					}
 					error = Some((origin.clone(), code))
