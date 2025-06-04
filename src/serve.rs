@@ -60,6 +60,10 @@ enum ProcessingState {
 
 use ProcessingState::*;
 
+fn status_is_ok(status: u16) -> bool {
+	(200..300).contains(&status)
+}
+
 impl ProcessingState {
 	//#[inline(always)]
 	fn halt_processing(&mut self) {
@@ -123,8 +127,7 @@ fn to_exit_code(res: Option<i32>) -> u16 {
 fn handle_file(
 	file: &Path,
 	mut prev_state: ProcessingState,
-	params: &Vec<String>,
-	pass_if_missing: bool,
+	params: &Vec<String>
 ) -> ProcessingState {
 	// there are many time-of-check time-of-use race conditions here.
 	// this is fine, because it's not expecting to be serving from
@@ -137,11 +140,13 @@ fn handle_file(
 		file.push(".index")
 	}
 	if !file.exists() {
-		if pass_if_missing {
-			prev_state
-		} else {
+		if prev_state.is_ok() {
 			prev_state.halt_processing();
 			ErrorCode(404)
+		} else {
+			// if it is not ok, this should be done during passthrough for error checking.
+			// so, no need to halt processing.
+			prev_state
 		}
 	} else if file.is_dir() {
 		// I am a teapot: I am a dir
