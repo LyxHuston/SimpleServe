@@ -17,11 +17,13 @@ use cmd_lib::run_fun;
 
 use tempfile::tempfile;
 
+#[derive(Debug)]
 struct OriginWrap<T> {
 	data: T,
 	origin: PathBuf,
 }
 
+#[derive(Debug)]
 struct HasStatus<T> {
 	data: T,
 	status: u16,
@@ -47,6 +49,7 @@ fn inner(s: BackTrackState) -> ProcessingState {
 	}
 }
 
+#[derive(Debug)]
 enum ProcessingState {
 	ErrorCode(u16),
 	InternalError(u16, String),
