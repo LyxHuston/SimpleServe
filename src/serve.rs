@@ -241,23 +241,24 @@ fn handle_layer(
 	params: &mut Vec<String>,
 	incoming_body: ProcessingState,
 ) -> BackTrackState {
-	if remaining_layers.is_empty() {
-		BackTrack(handle_file(curr_layer, incoming_body, params, false))
+	let res = if remaining_layers.is_empty() {
+		handle_file(curr_layer, incoming_body, params)
 	} else if remaining_layers[0].starts_with(".") {
 		// hide hidden files/directories and prevent escape through '..'
-		BackTrack(ErrorCode(403))
+		ErrorCode(403)
 	} else {
 		curr_layer.push(remaining_layers[0].clone());
 		let res = handle_layer(curr_layer, &remaining_layers[1..], params, incoming_body)?;
 		curr_layer.pop();
-		// if there is a base file, stop the backtracking and post-processing
-		curr_layer.push(".base");
-		if curr_layer.exists() {
-			return Done(res);
-		}
-		curr_layer.pop();
-		BackTrack(res)
+		res
+	};
+	// if there is a base file, stop the backtracking and post-processing
+	curr_layer.push(".base");
+	if curr_layer.exists() {
+		return Done(res);
 	}
+	curr_layer.pop();
+	BackTrack(res)
 }
 
 fn resolve_to_response_inner(
