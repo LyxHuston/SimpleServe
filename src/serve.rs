@@ -52,7 +52,7 @@ enum ProcessingState {
 	InternalError(u16, String),
 	Static(HasStatus<OriginWrap<File>>),
 	Chain(HasStatus<Vec<OriginWrap<Child>>>),
-	HttpError(Error),
+	HttpError(Error)
 }
 
 use ProcessingState::*;
@@ -63,7 +63,6 @@ impl ProcessingState {
 		let Chain(proc) = self else { return };
 		for child in &mut proc.data {
 			let _ = child.data.kill();
-			let _ = child.data.wait();
 		}
 	}
 
@@ -74,6 +73,21 @@ impl ProcessingState {
 			Static(HasStatus { data: _, status: e }) => *e,
 			Chain(HasStatus { data: _, status: e }) => *e,
 			HttpError(_) => 500,
+		}
+	}
+
+	fn handle_code(&self) -> Option<u16> {
+		match self {
+			ErrorCode(e) => Some(*e),
+			InternalError(e, m) => {
+				println!("{}", m);
+				Some(*e)
+			},
+			Static(HasStatus{
+				data:_,
+				status
+			}) => Some(*status),
+			_ => None
 		}
 	}
 }
@@ -194,8 +208,13 @@ fn handle_file(
 		})
 	} else {
 		// if exists, not executable, not a folder, return 200, Content-type mime-type, and the file
-		prev_state.halt_processing(); // should user be *allowed* to funnel a chain process
-		// into a static file?
+		// don't let them
+		let Some(c) = prev_state.handle_code() else {
+			return InternalError(
+				500,
+				format!("Non-error code handed to static file {}", file.to_string_lossy()),
+			);
+		};
 		let Ok(open_file) = File::open(&file) else {
 			return InternalError(
 				500,
@@ -207,7 +226,7 @@ fn handle_file(
 				data: open_file,
 				origin: file,
 			},
-			status: 200,
+			status: c,
 		})
 	}
 }
