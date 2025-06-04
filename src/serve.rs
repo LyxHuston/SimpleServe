@@ -283,16 +283,16 @@ fn resolve_to_response_inner(
 			status,
 		}) => {
 			let mut data = Vec::new();
-			f.rewind().map_err(|_| {
+			f.rewind().map_err(|e| {
 				InternalError(
 					500,
-					"Unable to rewind to start of file while resolving to response".to_string(),
+					format!("Unable to rewind to start of file while resolving to response: {}", e),
 				)
 			})?;
 			f.read_to_end(&mut data)
-				.map_err(|_| InternalError(500, format!("Couldn't read file {}", p.display())))?;
-			let mimetype = run_fun!(file -ib $p).map_err(|_| {
-				InternalError(500, format!("Error getting mimetype of {}", p.display()))
+			 .map_err(|e| InternalError(500, format!("Couldn't read file {}: {}", p.display(), e)))?;
+			let mimetype = run_fun!(file -ib $p).map_err(|e| {
+				InternalError(500, format!("Error getting mimetype of {}: {}", p.display(), e))
 			})?;
 			Ok(Builder::new()
 				.status(status)
@@ -309,10 +309,10 @@ fn resolve_to_response_inner(
 			} in c.iter_mut()
 			{
 				if error.is_none() {
-					let status_data = child.wait().map_err(|_| {
+					let status_data = child.wait().map_err(|e| {
 						InternalError(
 							500,
-							format!("Error resolving process chain at {}", origin.display()),
+							format!("Error resolving process chain at {}: {}", origin.display(), e),
 						)
 					})?;
 					let code = to_exit_code(status_data.code());
@@ -350,7 +350,7 @@ fn resolve_to_response_inner(
 					.data
 					.wait_with_output()
 					.map_err(
-						|_| InternalError(500, "End of chain could not capture output".to_string())
+						|e| InternalError(500, format!("End of chain could not capture output: {}", e))
 					)?;
 				Ok(String::from_utf8(output.stderr)
 					.map_err(
