@@ -2,7 +2,7 @@ use http::{Error, response::Builder};
 use http_body_util::{BodyExt, Full};
 use hyper::{
 	Request, Response,
-	body::{Bytes, Incoming},
+	body::{Body, Bytes, Incoming},
 };
 use std::{
 	fs::File,
@@ -540,5 +540,9 @@ async fn serve_help(body: Incoming, path: PathBuf, params: &[String], layers: &[
 pub async fn serve(req: Request<Incoming>, path: PathBuf) -> Result<Response<Full<Bytes>>, Error> {
 	let (parts, body) = req.into_parts();
 	let (params, layers) = get_params_and_layers(parts);
-	resolve_to_response(serve_help(body, path.clone(), &params, &layers).await, path, &params, &layers)
+	let mut resp = resolve_to_response(serve_help(body, path.clone(), &params, &layers).await, path, &params, &layers)?;
+	if let Some(size) = resp.size_hint().exact() {
+		resp.headers_mut().insert("Content-Length", size.into());
+	}
+	Ok(resp)
 }
