@@ -17,6 +17,36 @@ use cmd_lib::run_fun;
 
 use tempfile::tempfile;
 
+// copied from Midnight Machinations (the game)
+// https://github.com/midnight-machinations/midnight-machinations/blob/main/server/src/lib.rs
+macro_rules! log {
+    // Each case in this macro definition is for a different log marker.
+    // None
+    ($expr:expr) => {
+        println!("\x1b[0;90m{}\x1b[0m {}", chrono::Local::now().format("%m.%d %I:%M:%S"), $expr)
+    };
+    // Fatal error
+    (fatal $prefix:expr; $($expr:expr),*) => {
+        log!(&format!("\x1b[0;1;91m[{}] FATAL\x1b[0m \x1b[0;1;41m{}\x1b[0m", $prefix, &format!($($expr),*)))
+    };
+    // Warning error
+    (error $prefix:expr; $($expr:expr),*) => {
+        log!(&format!("\x1b[0;1;91m[{}] WARN\x1b[0m {}", $prefix, &format!($($expr),*)))
+    };
+    // Important
+    (important $prefix:expr; $($expr:expr),*) => {
+        log!(&format!("\x1b[0;1;93m[{}]\x1b[0m {}", $prefix, &format!($($expr),*)))
+    };
+    // Info
+    (info $prefix:expr; $($expr:expr),*) => {
+        log!(&format!("\x1b[0;1;32m[{}]\x1b[0m {}", $prefix, &format!($($expr),*)))
+    };
+    // Default (use info)
+    ($prefix:expr; $($expr:expr),*) => {
+        log!(info $prefix; $($expr),*)
+    };
+}
+
 #[derive(Debug)]
 struct OriginWrap<T> {
 	data: T,
@@ -87,7 +117,7 @@ impl ProcessingState {
 		match self {
 			ErrorCode(e) => Some(*e),
 			InternalError(e, m) => {
-				println!("{}", m);
+				log!(error "ERROR"; "{}", m);
 				Some(*e)
 			},
 			Static(HasStatus{
@@ -97,7 +127,10 @@ impl ProcessingState {
 			// this method is used to decide what to do with a static file.
 			// need to decide how to handle the chain.  Want to at least
 			// completely resolve it.
-			Chain(_) => todo!(),
+			Chain(_) => {
+				log!(fatal "FATAL"; "Attempting to direct a chain into a static file.  This is unimplemented, erroring.");
+				todo!()
+			},
 			_ => None
 		}
 	}
@@ -115,12 +148,17 @@ impl ProcessingState {
 /// to add more acceptable status codes, extend this list
 pub const EXIT_CODES: &[u16] = &[
 	// special case: successful execution should return a success
-	200, // 1**, informational response
-	100, 101, 102, 103, // 2**, success
-	200, 201, 202, 203, 204, 205, 206, 207, 208, 226, // 3**, redirection
-	300, 301, 302, 303, 304, 305, 306, 307, 308, // 4**, client errors
+	200,
+	// 1**, informational response
+	100, 101, 102, 103,
+	// 2**, success
+	200, 201, 202, 203, 204, 205, 206, 207, 208, 226,
+	// 3**, redirection
+	300, 301, 302, 303, 304, 305, 306, 307, 308,
+	// 4**, client errors
 	400, 401, 402, 403, 404, 405, 406, 407, 408, 409, 410, 411, 412, 413, 414, 415, 416, 417, 418,
-	421, 422, 423, 424, 425, 426, 428, 429, 431, 451, // 5**, server errors
+	421, 422, 423, 424, 425, 426, 428, 429, 431, 451,
+	// 5**, server errors
 	500, 501, 502, 503, 504, 505, 506, 507, 508, 510, 511,
 ];
 
@@ -276,6 +314,18 @@ fn handle_layer(
 	BackTrack(res)
 }
 
+fn error_response (e: u16) -> Result<Response<Full<Bytes>>, Error> {
+	let message = format!(
+		"Error {}: That's all we know",
+		e
+	);
+	Builder::new()
+		.status(e)
+		.header("Content-Type", "text/plain; charset=us-ascii")
+		.header("Content-Length", message.len())
+		.body(Full::new(Bytes::from(message)))
+}
+
 fn resolve_to_response_inner(
 	status: ProcessingState,
 	basepath: &PathBuf,
@@ -283,16 +333,10 @@ fn resolve_to_response_inner(
 	layers: &[String]
 ) -> Result<Result<Response<Full<Bytes>>, Error>, ProcessingState> {
 	match status {
-		ErrorCode(e) => Ok(Builder::new().status(e).body(Full::new(Bytes::from(format!(
-			"Error {}: That's all we know",
-			e
-		))))),
+		ErrorCode(e) => Ok(error_response(e)),
 		InternalError(e, msg) => {
-			println!("{}", msg);
-			Ok(Builder::new().status(e).body(Full::new(Bytes::from(format!(
-				"Error {}: That's all we know",
-				e
-			)))))
+			log!(error "ERROR"; "{}", msg);
+			Ok(error_response(e))
 		}
 		Static(HasStatus {
 			data: OriginWrap {
