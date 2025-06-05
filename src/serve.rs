@@ -520,7 +520,7 @@ async fn serve_help(body: Incoming, path: PathBuf, params: &[String], layers: &[
 		return InternalError(500, "Unable to flush temp file.".to_string());
 	};
 	let Ok(_) = inp.rewind() else {
-		return InternalError(500, "Unable to flush temp file.".to_string());
+		return InternalError(500, "Unable to rewind temp file.".to_string());
 	};
 	// handle it, then go over the output
 	inner(handle_layer(
