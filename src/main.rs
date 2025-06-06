@@ -118,7 +118,8 @@ async fn https_server(listener: TcpListener, basedir: PathBuf, args: Args) -> Re
 
 	loop {
 		let basedir = basedir.clone();
-		let (tcp_stream, _) = listener.accept().await?;
+		let (tcp_stream, addr) = listener.accept().await?;
+		log!(info "INFO"; "connection with {} accepted.", addr);
 		let tls_acceptor = tls_acceptor.clone();
 		tokio::spawn(async move {
 			let tls_stream = match tls_acceptor.accept(tcp_stream).await {
@@ -169,7 +170,8 @@ async fn http_server(listener: TcpListener, basedir: PathBuf) -> Result<
 		Box<dyn std::error::Error + Send + Sync>
 		> {
 	loop {
-		let (tcp_stream, _) = listener.accept().await?;
+		let (tcp_stream, addr) = listener.accept().await?;
+		log!(info "INFO"; "connection with {} accepted.", addr);
 		let basedir = basedir.clone();
 		// Use an adapter to access something implementing `tokio::io` traits as if they implement
 		// `hyper::rt` IO traits.

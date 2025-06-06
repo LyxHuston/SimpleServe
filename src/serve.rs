@@ -19,7 +19,7 @@ use tempfile::tempfile;
 
 // copied from Midnight Machinations (the game)
 // https://github.com/midnight-machinations/midnight-machinations/blob/main/server/src/lib.rs
-macro_rules! log {
+#[macro_export] macro_rules! log {
     // Each case in this macro definition is for a different log marker.
     // None
     ($expr:expr) => {
@@ -540,7 +540,12 @@ async fn serve_help(body: Incoming, path: PathBuf, params: &[String], layers: &[
 pub async fn serve(req: Request<Incoming>, path: PathBuf) -> Result<Response<Full<Bytes>>, Error> {
 	let (parts, body) = req.into_parts();
 	let (params, layers) = get_params_and_layers(parts);
-	let mut resp = resolve_to_response(serve_help(body, path.clone(), &params, &layers).await, path, &params, &layers)?;
+	let mut resp = resolve_to_response(
+		serve_help(body, path.clone(), &params, &layers).await,
+		path,
+		&params,
+		&layers
+	)?;
 	if let Some(size) = resp.size_hint().exact() {
 		resp.headers_mut().insert("Content-Length", size.into());
 	}
