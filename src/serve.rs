@@ -450,6 +450,7 @@ fn resolve_to_response(
 }
 
 /// uri_path, METHOD "" headers "" url parameters "" path parameters (server does not get fragment)
+/// (parameters, layers)
 fn get_params_and_layers(parts: http::request::Parts) -> (Vec<String>, Vec<String>) {
 	(
 		[
@@ -480,6 +481,7 @@ fn get_params_and_layers(parts: http::request::Parts) -> (Vec<String>, Vec<Strin
 								)
 							)
 					)
+					.filter(|s| !s.is_empty())
 			)
 			.chain(["".to_string()])
 			.chain(
@@ -488,6 +490,7 @@ fn get_params_and_layers(parts: http::request::Parts) -> (Vec<String>, Vec<Strin
 					.query()
 					.unwrap_or("")
 					.split("&")
+					.filter(|s| !s.is_empty())
 					.map(String::from)
 			)
 			.chain(["".to_string()])
