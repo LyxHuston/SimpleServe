@@ -173,7 +173,8 @@ fn to_exit_code(res: Option<i32>) -> u16 {
 fn handle_file(
 	file: &Path,
 	mut prev_state: ProcessingState,
-	params: &Vec<String>
+	params: &Vec<String>,
+	pass_if_missing: bool
 ) -> ProcessingState {
 	// there are many time-of-check time-of-use race conditions here.
 	// this is fine, because it's not expecting to be serving from
@@ -186,12 +187,13 @@ fn handle_file(
 		file.push(".index")
 	}
 	if !file.exists() {
-		if prev_state.is_ok() {
+		if prev_state.is_ok() && !pass_if_missing {
 			prev_state.halt_processing();
 			ErrorCode(404)
 		} else {
 			// if it is not ok, this should be done during passthrough for error checking.
 			// so, no need to halt processing.
+			// also if told to pass through (ex: for post-processing)
 			prev_state
 		}
 	} else if file.is_dir() {
@@ -293,7 +295,7 @@ fn handle_layer(
 	incoming_body: ProcessingState,
 ) -> BackTrackState {
 	let res = if remaining_layers.is_empty() {
-		handle_file(curr_layer, incoming_body, params)
+		handle_file(curr_layer, incoming_body, params, false)
 	} else if remaining_layers[0].starts_with(".") {
 		// hide hidden files/directories and prevent escape through '..'
 		ErrorCode(403)
@@ -303,6 +305,11 @@ fn handle_layer(
 		curr_layer.pop();
 		res
 	};
+	
+	// if there is a base file, stop the backtracking and post-processing
+	curr_layer.push(".post_process");
+	let res = handle_file(curr_layer, res, params, true);
+	curr_layer.pop();
 	// if there is a base file, stop the backtracking and post-processing
 	curr_layer.push(".base");
 	if curr_layer.exists() {
