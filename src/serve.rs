@@ -113,17 +113,17 @@ impl ProcessingState {
 		}
 	}
 
-	fn handle_code(&self) -> Option<u16> {
+	fn handle_code(self) -> Result<u16, ProcessingState> {
 		match self {
-			ErrorCode(e) => Some(*e),
+			ErrorCode(e) => Ok(e),
 			InternalError(e, m) => {
 				log!(error "ERROR"; "{}", m);
-				Some(*e)
+				Ok(e)
 			},
 			Static(HasStatus{
 				data:_,
 				status
-			}) => Some(*status),
+			}) => Ok(status),
 			// this method is used to decide what to do with a static file.
 			// need to decide how to handle the chain.  Want to at least
 			// completely resolve it.
@@ -131,7 +131,7 @@ impl ProcessingState {
 				log!(fatal "FATAL"; "Attempting to direct a chain into a static file.  This is unimplemented, erroring.");
 				todo!()
 			},
-			_ => None
+			HttpError(e) => Err(HttpError(e))
 		}
 	}
 
@@ -266,11 +266,9 @@ fn handle_file(
 		// Content-type mime-type, and the file
 
 		// process chains currently panic with a todo here.
-		let Some(c) = prev_state.handle_code() else {
-			return InternalError(
-				500,
-				format!("Non-error code handed to static file {}", file.to_string_lossy()),
-			);
+		let c = match prev_state.handle_code() {
+			Ok(c) => c,
+			Err(e) => {return e;}
 		};
 		let Ok(open_file) = File::open(&file) else {
 			return InternalError(
