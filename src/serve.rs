@@ -135,6 +135,14 @@ impl ProcessingState {
 		}
 	}
 
+	fn error_code(&self) -> Option<u16> {
+		match self {
+			ErrorCode(e) => Some(*e),
+			InternalError(e, _) => Some(*e),
+			_ => None
+		}
+	}
+	
 	fn is_ok(&self) -> bool {
 		status_is_ok(self.status())
 	}
@@ -288,6 +296,10 @@ fn handle_file(
 	}
 }
 
+const SPECIAL_FOLDERS :  &[&str] = &[
+	".error"
+];
+
 fn handle_layer(
 	curr_layer: &mut PathBuf,
 	remaining_layers: &[String],
@@ -305,11 +317,27 @@ fn handle_layer(
 		curr_layer.pop();
 		res
 	};
+
+	let res = if let Some(error) = res.error_code() {
+		curr_layer.push(".error");
+		curr_layer.push(error.to_string());
+		let r = handle_file(curr_layer, res, params, true);
+		curr_layer.pop();
+		curr_layer.pop();
+		r
+	} else {
+		res
+	};
 	
-	// if there is a base file, stop the backtracking and post-processing
-	curr_layer.push(".post_process");
-	let res = handle_file(curr_layer, res, params, true);
-	curr_layer.pop();
+	// if there is a post-processing file and current body is OK, put it through the file
+	let res = if res.error_code().is_none() {
+		curr_layer.push(".post_process");
+		let r = handle_file(curr_layer, res, params, true);
+		curr_layer.pop();
+		r
+	} else {
+		res
+	};
 	// if there is a base file, stop the backtracking and post-processing
 	curr_layer.push(".base");
 	if curr_layer.exists() {
@@ -392,19 +420,27 @@ fn resolve_to_response_inner(
 					let _ = child.kill();
 				}
 			}
-			if let Some((origin, code)) = error {
+			if let Some((mut origin, code)) = error {
+				origin.pop();
+				// special folders can bloat the path, might cause an infinite loop of errors.
+				// remove special folders from the path.
+				for _ in origin
+					.clone()
+					.iter()
+					.rev()
+					.map_while(|s| s.to_str().filter(|p| SPECIAL_FOLDERS.contains(p)))
+				{
+					origin.pop();
+				}
 				let len = origin.components().count()
-					.saturating_sub(basepath.components().count())
-					.saturating_sub(1);
-				let mut p = params.clone();
-				let mut b = basepath.clone();
+					.saturating_sub(basepath.components().count());
 				resolve_to_response_inner(
 					inner(handle_layer(
-						&mut b,
+						&mut basepath.clone(),
 						// only situation min statement should be useful is when something came from an
 						// index or error file. 
 						&layers[..len.clamp(0, layers.len())],
-						&mut p,
+						&mut params.clone(),
 						ErrorCode(code)
 					)),
 					basepath,
