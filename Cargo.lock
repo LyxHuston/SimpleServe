@@ -1250,6 +1250,7 @@ dependencies = [
  "hyper-tls",
  "hyper-util",
  "is_executable",
+ "regex",
  "rustls",
  "rustls-pemfile",
  "rustls-pki-types",

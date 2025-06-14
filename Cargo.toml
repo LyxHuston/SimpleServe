@@ -13,6 +13,7 @@ hyper = { version = "1.6.0", features = ["full"] }
 hyper-tls = "0.6.0"
 hyper-util = { version = "0.1.13", features = ["full"] }
 is_executable = "1.0.4"
+regex = "1.11.1"
 rustls = { version = "0.23.27", features = ["ring", "aws-lc-rs"] }
 rustls-pemfile = "2.2.0"
 rustls-pki-types = "1.12.0"

@@ -1,11 +1,12 @@
 use http::{Error, response::Builder};
 use http_body_util::{BodyExt, Full};
+use regex::Regex;
 use hyper::{
 	Request, Response,
 	body::{Body, Bytes, Incoming},
 };
 use std::{
-	fs::File,
+	fs::{read_dir, DirEntry, File},
 	io::{Read, Seek, Write},
 	path::{Path, PathBuf},
 	process::{Child, Command, Stdio},
@@ -308,14 +309,58 @@ fn handle_layer(
 ) -> BackTrackState {
 	let res = if remaining_layers.is_empty() {
 		handle_file(curr_layer, incoming_body, params, false)
-	} else if remaining_layers[0].starts_with(".") {
+	} else if remaining_layers[0].starts_with(".") || remaining_layers[0].starts_with("&") {
 		// hide hidden files/directories and prevent escape through '..'
+		// also hide regex paths
 		ErrorCode(403)
+	} else if let Ok(mut dir_content) = read_dir(curr_layer.clone())
+		.map(
+			|r| r
+				.filter_map(Result::ok)
+				.filter_map(|e| DirEntry::file_name(&e).to_str().map(String::from))
+				.collect::<Vec<String>>()
+		)
+	{
+		let part = remaining_layers[0].clone();
+		// prevent undefined behavior when multiple regexes match the part
+		dir_content.sort();
+		if dir_content.contains(&part) {
+			curr_layer.push(part);
+			let r = handle_layer(curr_layer, &remaining_layers[1..], params, incoming_body)?;
+			curr_layer.pop();
+			r
+		} else if let Some((p, capture)) = dir_content
+				.iter()
+				.filter_map(
+				|s|
+				Some(s).zip(
+					s
+						.strip_prefix("&")
+						.map(Regex::new)
+						.and_then(Result::ok)
+						.and_then(|r| r.captures(part.as_str()))
+				)
+			)
+			.next()
+		{
+			curr_layer.push(p);
+			params.extend(capture
+				.iter()
+				.map(|o| o
+					 .map(|m| m.as_str())
+					 .unwrap_or("")
+					 .to_string()
+				)
+			);
+			curr_layer.push(p);
+			let r = handle_layer(curr_layer, &remaining_layers[1..], params, incoming_body)?;
+			curr_layer.pop();
+			r
+		} else {
+			ErrorCode(404)
+		}
 	} else {
-		curr_layer.push(remaining_layers[0].clone());
-		let res = handle_layer(curr_layer, &remaining_layers[1..], params, incoming_body)?;
-		curr_layer.pop();
-		res
+		ErrorCode(404)
 	};
 
 	let res = if let Some(error) = res.error_code() {
